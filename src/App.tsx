@@ -8,6 +8,7 @@ import InventoryModule from './modules/inventory/InventoryModule';
 import LedgerModule from './modules/ledger/LedgerModule';
 import CompanyModule from './modules/company/CompanyModule';
 import SettingsModule from './modules/settings/SettingsModule';
+import ReportsModule from './modules/reports/ReportsModule';
 import { DashboardProvider } from './context/DashboardContext';
 import { CompanyProvider } from './context/CompanyContext';
 import CompanySelection from './components/CompanySelection';
@@ -137,7 +138,7 @@ function App() {
                     <Route path="/purchases" element={<PurchasesModule />} />
                     <Route path="/inventory" element={<InventoryModule />} />
                     <Route path="/expenses" element={<PlaceholderModule title="Expenses" description="Track and manage your business expenses" />} />
-                    <Route path="/reports" element={<PlaceholderModule title="Reports" description="Generate comprehensive financial reports" />} />
+                    <Route path="/reports/*" element={<ReportsModule />} />
                     <Route path="/gst" element={<PlaceholderModule title="GST Management" description="Handle GST calculations and filings" />} />
                     <Route path="/ledger" element={<LedgerModule serverUrl={serverUrl || ''} />} />
                     <Route path="/company" element={<CompanyModule />} />

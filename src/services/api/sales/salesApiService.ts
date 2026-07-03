@@ -35,6 +35,9 @@ export interface SalesVoucher {
   gstBreakdown?: GSTBreakdown;
   roundOff?: number;
   totalDiscount?: number;
+  // UDF fields
+  caption?: string;
+  publication?: string;
 }
 
 export interface GSTBreakdown {
@@ -56,6 +59,14 @@ export interface StockItem {
   hsn?: string;
   discount?: number;
   discountPercent?: number;
+  // UDF fields
+  inchDate1?: string;
+  position?: string;
+  width?: number;
+  height?: number;
+  volume?: number;
+  rateUDF?: number;
+  numberOfAds?: number;
 }
 
 export class SalesApiService extends BaseApiService {
@@ -139,6 +150,10 @@ export class SalesApiService extends BaseApiService {
     const reference = voucherElement.querySelector('REFERENCE')?.textContent || '';
     const voucherType = voucherElement.querySelector('VOUCHERTYPENAME')?.textContent || '';
     
+    // Extract Voucher UDFs
+    const caption = voucherElement.querySelector('DHVCHCAPTION')?.textContent || '';
+    const publication = voucherElement.querySelector('DHVCHPUBLICAPTION')?.textContent || '';
+    
     // Extract inventory entries (items)
     const inventoryEntries: any[] = [];
     const inventoryElements = voucherElement.querySelectorAll('ALLINVENTORYENTRIES\\.LIST');
@@ -152,6 +167,15 @@ export class SalesApiService extends BaseApiService {
       const hsnCode = entry.querySelector('GSTHSNNAME')?.textContent || '';
       const taxability = entry.querySelector('GSTOVRDNTAXABILITY')?.textContent || '';
       const typeOfSupply = entry.querySelector('GSTOVRDNTYPEOFSUPPLY')?.textContent || '';
+      
+      // Extract Item UDFs
+      const inchDate1 = entry.querySelector('DHVCHINCHDATE1')?.textContent || '';
+      const position = entry.querySelector('DHVCHPOSITIVE')?.textContent || '';
+      const width = parseFloat(entry.querySelector('DHVCHWIDTH')?.textContent || '0');
+      const height = parseFloat(entry.querySelector('DHVCHHEIGHT')?.textContent || '0');
+      const volume = width * height;
+      const rateUDF = parseFloat(entry.querySelector('DHVCHRATE')?.textContent || '0');
+      const numberOfAds = parseFloat(entry.querySelector('DHVCHADS')?.textContent || '0');
       
       // Extract GST rates from RATEDETAILS.LIST
       const rateDetails = entry.querySelectorAll('RATEDETAILS\\.LIST');
@@ -178,7 +202,14 @@ export class SalesApiService extends BaseApiService {
           cgstRate,
           sgstRate,
           igstRate,
-          totalGstRate: cgstRate + sgstRate + igstRate
+          totalGstRate: cgstRate + sgstRate + igstRate,
+          inchDate1,
+          position,
+          width,
+          height,
+          volume,
+          rateUDF,
+          numberOfAds
         });
       }
     });
@@ -196,6 +227,8 @@ export class SalesApiService extends BaseApiService {
       totalTax: totalTax,
       reference,
       voucherType,
+      caption,
+      publication,
       inventoryEntries,
       itemCount: inventoryEntries.length
     };
@@ -361,6 +394,58 @@ export class SalesApiService extends BaseApiService {
   }
 
   /**
+   * Fetch detailed sales vouchers including inventory entries for reports.
+   * Uses the Report-based Export Data approach (Voucher Register) which
+   * reliably includes all inventory entries with EXPLODEFLAG.
+   */
+  async getDetailedSalesVouchers(
+    companyName: string, 
+    dateRangeOption: DateRangeOption = 'currentMonth',
+    customFromDate?: Date,
+    customToDate?: Date
+  ): Promise<SalesVoucher[]> {
+    
+    if (!companyName) {
+      throw new Error('No company selected. Please select a company first.');
+    }
+
+    const { fromDate, toDate, label } = this.getDateRange(dateRangeOption, customFromDate, customToDate);
+    
+    const fromDateStr = this.formatDateForTally(fromDate);
+    const toDateStr = this.formatDateForTally(toDate);
+    
+    const xmlRequest = `<ENVELOPE>
+  <HEADER>
+    <TALLYREQUEST>Export Data</TALLYREQUEST>
+  </HEADER>
+  <BODY>
+    <EXPORTDATA>
+      <REQUESTDESC>
+        <REPORTNAME>Voucher Register</REPORTNAME>
+        <STATICVARIABLES>
+          <SVCURRENTCOMPANY>${companyName}</SVCURRENTCOMPANY>
+          <SVFROMDATE TYPE="DATE">${fromDateStr}</SVFROMDATE>
+          <SVTODATE TYPE="DATE">${toDateStr}</SVTODATE>
+          <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+          <EXPLODEFLAG>Yes</EXPLODEFLAG>
+        </STATICVARIABLES>
+      </REQUESTDESC>
+    </EXPORTDATA>
+  </BODY>
+</ENVELOPE>`;
+
+    try {
+      const response = await this.makeRequest(xmlRequest);
+      
+      const result = this.parseSalesVouchersResponse(response);
+      
+      return result;
+    } catch (error) {
+      throw new Error(`Failed to fetch detailed sales data: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
    * Fetch current month sales vouchers (legacy method)
    */
   async getLast7DaysSalesVouchers(companyName: string): Promise<SalesVoucher[]> {
@@ -467,9 +552,17 @@ export class SalesApiService extends BaseApiService {
             return;
           }
           
-          // Filter for only Tax Invoice vouchers (exact match)
-          // Exclude Proforma Invoices and other non-sales vouchers
-          if (vchType !== 'Tax Invoice') {
+          // Filter for sales-related vouchers only
+          // Accept: Sales, Tax Invoice, Sales Invoice, etc.
+          // Reject: Purchase, Payment, Receipt, Journal, Contra, Proforma Invoice, etc.
+          const vchTypeLower = vchType.toLowerCase();
+          const isSalesVoucher = 
+            vchTypeLower === 'sales' ||
+            vchTypeLower === 'tax invoice' ||
+            vchTypeLower === 'sales invoice' ||
+            vchTypeLower.includes('sales') && !vchTypeLower.includes('proforma');
+          
+          if (!isSalesVoucher) {
             return;
           }
           
@@ -480,6 +573,10 @@ export class SalesApiService extends BaseApiService {
           // Extract other attributes
           const remoteid = voucher.getAttribute('REMOTEID') || '';
           const vchkey = voucher.getAttribute('VCHKEY') || '';
+          
+          // Extract Voucher UDFs
+          const caption = voucher.querySelector('UDF\\:DHVCHCAPTION\\.LIST DESC')?.textContent || voucher.querySelector('DHVCHCAPTION')?.textContent || '';
+          const publication = voucher.querySelector('UDF\\:DHVCHPUBLICAPTION\\.LIST DESC')?.textContent || voucher.querySelector('DHVCHPUBLICAPTION')?.textContent || '';
           
           // Extract inventory details (stock items) from ALLINVENTORYENTRIES.LIST
           const stockItems: StockItem[] = [];
@@ -500,6 +597,16 @@ export class SalesApiService extends BaseApiService {
             const grossAmount = rateValue * qtyValue;
             const discountPercent = parseFloat(entry.querySelector('DISCOUNT')?.textContent || '0');
             const discountAmount = grossAmount > 0 ? (grossAmount * (discountPercent / 100)) : 0;
+            
+            // Extract Item UDFs
+            const inchDate1 = entry.querySelector('UDF\\:DHVCHINCHDATE1\\.LIST DESC')?.textContent || entry.querySelector('DHVCHINCHDATE1')?.textContent || '';
+            const position = entry.querySelector('UDF\\:DHVCHPOSITIVE\\.LIST DESC')?.textContent || entry.querySelector('DHVCHPOSITIVE')?.textContent || '';
+            const width = parseFloat(entry.querySelector('UDF\\:DHVCHWIDTH\\.LIST DESC')?.textContent || entry.querySelector('DHVCHWIDTH')?.textContent || '0');
+            const height = parseFloat(entry.querySelector('UDF\\:DHVCHHEIGHT\\.LIST DESC')?.textContent || entry.querySelector('DHVCHHEIGHT')?.textContent || '0');
+            const volume = parseFloat(entry.querySelector('UDF\\:DHVCHVOL\\.LIST DESC')?.textContent || entry.querySelector('DHVCHVOL')?.textContent || '0') || (width * height);
+            const rateUDF = parseFloat(entry.querySelector('UDF\\:DHVCHRATE\\.LIST DESC')?.textContent || entry.querySelector('DHVCHRATE')?.textContent || '0');
+            const numberOfAds = parseFloat(entry.querySelector('UDF\\:DHVCHADS\\.LIST DESC')?.textContent || entry.querySelector('DHVCHADS')?.textContent || '0');
+
             if (stockItemName) {
               stockItems.push({
                 name: stockItemName,
@@ -509,7 +616,14 @@ export class SalesApiService extends BaseApiService {
                 amount: itemAmount,
                 hsn: hsnCode || 'N/A',
                 discount: discountAmount > 0 ? Math.round(discountAmount * 100) / 100 : undefined,
-                discountPercent: discountPercent > 0 ? Math.round(discountPercent * 100) / 100 : undefined
+                discountPercent: discountPercent > 0 ? Math.round(discountPercent * 100) / 100 : undefined,
+                inchDate1,
+                position,
+                width,
+                height,
+                volume,
+                rateUDF,
+                numberOfAds
               });
               totalDiscount += discountAmount;
             }
@@ -584,7 +698,9 @@ export class SalesApiService extends BaseApiService {
             itemCount: stockItems.length > 0 ? stockItems.length : undefined,
             gstBreakdown: gstBreakdown.total > 0 ? gstBreakdown : undefined,
             roundOff: roundOff !== 0 ? roundOff : undefined,
-            totalDiscount: totalDiscount > 0 ? totalDiscount : undefined
+            totalDiscount: totalDiscount > 0 ? totalDiscount : undefined,
+            caption,
+            publication
           };
           
           salesVouchers.push(salesVoucher);
